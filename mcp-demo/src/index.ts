@@ -19,6 +19,18 @@ server.tool(
   })
 );
 
+server.tool(
+  "multiply_numbers",
+  "Multiply two numbers together",
+  {
+    a: z.number(),
+    b: z.number(),
+  },
+  async ({ a, b }) => ({
+    content: [{ type: "text", text: String(a * b) }],
+  })
+);
+
 server.resource(
   "project-notes",
   new ResourceTemplate("project://{topic}", { list: undefined }),
