@@ -9,8 +9,8 @@
     "dev": "tsx src/index.ts",
     "test": "tsx --test tests/*.test.ts"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": ["mcp", "github", "stdio", "typescript", "model-context-protocol"],
+  "author": "Zohair313",
   "license": "ISC",
   "type": "module",
   "dependencies": {
