@@ -1,6 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { listGitHubFiles, readGitHubFile } from "../services/githubClient.js";
+import {
+  analyzeGitHubRepo,
+  getRecentCommits,
+  listGitHubFiles,
+  readGitHubFile,
+} from "../services/githubClient.js";
 import { GitHubClientError, type GitHubClientOptions } from "../types.js";
 
 function formatToolError(error: unknown) {
@@ -68,6 +73,55 @@ export function registerGitHubTools(
         const result = await readGitHubFile(owner, repo, path, clientOptions);
         return {
           content: [{ type: "text", text: result.text }],
+        };
+      } catch (error) {
+        return formatToolError(error);
+      }
+    }
+  );
+
+  server.tool(
+    "get_recent_commits",
+    "Fetch recent commits from a GitHub repository",
+    {
+      owner: z.string().trim().min(1).describe("GitHub username or organization, e.g. Zohair313"),
+      repo: z.string().trim().min(1).describe("Repository name, e.g. Mcp-Server"),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(20)
+        .optional()
+        .default(5)
+        .describe("Number of recent commits to return (1-20)"),
+    },
+    async ({ owner, repo, limit }) => {
+      try {
+        const commits = await getRecentCommits(owner, repo, limit, clientOptions);
+        const formatted = commits
+          .map((c) => `${c.sha} | ${c.date} | ${c.author}: ${c.message}`)
+          .join("\n");
+        return {
+          content: [{ type: "text", text: formatted || "(no commits found)" }],
+        };
+      } catch (error) {
+        return formatToolError(error);
+      }
+    }
+  );
+
+  server.tool(
+    "analyze_repo",
+    "Analyze a GitHub repository's metadata, root structure, health checks, and tech stack",
+    {
+      owner: z.string().trim().min(1).describe("GitHub username or organization, e.g. Zohair313"),
+      repo: z.string().trim().min(1).describe("Repository name, e.g. Mcp-Server"),
+    },
+    async ({ owner, repo }) => {
+      try {
+        const analysis = await analyzeGitHubRepo(owner, repo, clientOptions);
+        return {
+          content: [{ type: "text", text: JSON.stringify(analysis, null, 2) }],
         };
       } catch (error) {
         return formatToolError(error);

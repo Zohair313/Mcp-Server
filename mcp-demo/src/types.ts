@@ -31,6 +31,41 @@ export interface GitHubFileResult {
 }
 
 /**
+ * Summary of a GitHub commit entry.
+ */
+export interface GitHubCommitSummary {
+  sha: string;
+  message: string;
+  author: string;
+  date: string;
+}
+
+/**
+ * Repository metadata & health analysis summary.
+ */
+export interface GitHubRepoAnalysis {
+  fullName: string;
+  description: string | null;
+  defaultBranch: string;
+  language: string | null;
+  stars: number;
+  forks: number;
+  openIssues: number;
+  rootEntries: string[];
+  checks: {
+    hasReadme: boolean;
+    hasGitignore: boolean;
+    hasLicense: boolean;
+    hasTestsDir: boolean;
+    hasCiWorkflows: boolean;
+    hasPackageJson: boolean;
+  };
+  scripts: string[];
+  dependencies: string[];
+  devDependencies: string[];
+}
+
+/**
  * Structured error for GitHub API and content-handling failures.
  */
 export class GitHubClientError extends Error {

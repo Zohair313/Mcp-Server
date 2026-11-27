@@ -4,6 +4,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../src/server.js";
 import {
+  analyzeGitHubRepo,
+  getRecentCommits,
   listGitHubFiles,
   normalizeRepoPath,
   readGitHubFile,
@@ -147,14 +149,54 @@ describe("githubClient API handling", () => {
 });
 
 describe("MCP server integration", () => {
-  it("exposes only GitHub tools + project-notes resource and handles tool errors cleanly", async () => {
+  it("exposes GitHub tools, project-notes resource, and prompts cleanly", async () => {
     const fetchImpl: typeof fetch = async (input) => {
       const url = String(input);
       if (url.endsWith("/contents/missing.md")) {
         return jsonResponse({ message: "Not Found" }, 404);
       }
+      if (url.includes("/commits")) {
+        return jsonResponse([
+          {
+            sha: "abcdef1234567890",
+            commit: {
+              message: "feat: initial release\n\ndetails",
+              author: { name: "Zohair", date: "2026-11-27T00:00:00Z" },
+            },
+          },
+        ]);
+      }
+      if (url.endsWith("/repos/Zohair313/Mcp-Server")) {
+        return jsonResponse({
+          full_name: "Zohair313/Mcp-Server",
+          description: "MCP server",
+          default_branch: "main",
+          language: "TypeScript",
+          stargazers_count: 5,
+          forks_count: 1,
+          open_issues_count: 0,
+        });
+      }
+      if (url.endsWith("/contents/package.json")) {
+        return jsonResponse({
+          name: "package.json",
+          path: "package.json",
+          type: "file",
+          content: Buffer.from(
+            JSON.stringify({
+              scripts: { build: "tsc", test: "tsx --test" },
+              dependencies: { "@modelcontextprotocol/sdk": "^1.0.0" },
+              devDependencies: { typescript: "^5.0.0" },
+            }),
+            "utf-8"
+          ).toString("base64"),
+          encoding: "base64",
+        });
+      }
       return jsonResponse([
         { name: "README.md", path: "README.md", type: "file" },
+        { name: "package.json", path: "package.json", type: "file" },
+        { name: ".gitignore", path: ".gitignore", type: "file" },
       ]);
     };
 
@@ -166,14 +208,41 @@ describe("MCP server integration", () => {
 
     const { tools } = await client.listTools();
     const toolNames = tools.map((t) => t.name).sort();
-    assert.deepEqual(toolNames, ["list_github_files", "read_github_file"]);
+    assert.deepEqual(toolNames, [
+      "analyze_repo",
+      "get_recent_commits",
+      "list_github_files",
+      "read_github_file",
+    ]);
 
     const listRes = await client.callTool({
       name: "list_github_files",
       arguments: { owner: "Zohair313", repo: "Mcp-Server" },
     });
     assert.equal(listRes.isError, undefined);
-    assert.deepEqual(listRes.content, [{ type: "text", text: "[file] README.md" }]);
+    assert.match((listRes.content as Array<{ text: string }>)[0]?.text ?? "", /\[file\] README\.md/);
+
+    const commitsRes = await client.callTool({
+      name: "get_recent_commits",
+      arguments: { owner: "Zohair313", repo: "Mcp-Server", limit: 1 },
+    });
+    assert.equal(commitsRes.isError, undefined);
+    assert.match(
+      (commitsRes.content as Array<{ text: string }>)[0]?.text ?? "",
+      /abcdef1 \| 2026-11-27T00:00:00Z \| Zohair: feat: initial release/
+    );
+
+    const analyzeRes = await client.callTool({
+      name: "analyze_repo",
+      arguments: { owner: "Zohair313", repo: "Mcp-Server" },
+    });
+    assert.equal(analyzeRes.isError, undefined);
+    const parsedAnalysis = JSON.parse(
+      (analyzeRes.content as Array<{ text: string }>)[0]?.text ?? "{}"
+    ) as { fullName: string; checks: { hasReadme: boolean }; dependencies: string[] };
+    assert.equal(parsedAnalysis.fullName, "Zohair313/Mcp-Server");
+    assert.equal(parsedAnalysis.checks.hasReadme, true);
+    assert.deepEqual(parsedAnalysis.dependencies, ["@modelcontextprotocol/sdk"]);
 
     const errRes = await client.callTool({
       name: "read_github_file",
@@ -188,6 +257,50 @@ describe("MCP server integration", () => {
       /Notes for mcp: MCP separates tools \(actions\) from resources \(context\)\./
     );
 
+    const { prompts } = await client.listPrompts();
+    assert.deepEqual(
+      prompts.map((p) => p.name).sort(),
+      ["onboard_developer", "review_repo"]
+    );
+
+    const promptRes = await client.getPrompt({
+      name: "review_repo",
+      arguments: { owner: "Zohair313", repo: "Mcp-Server" },
+    });
+    assert.match(
+      (promptRes.messages[0]?.content as { text: string }).text,
+      /analyze_repo on Zohair313\/Mcp-Server/
+    );
+
     await client.close();
+  });
+
+  it("getRecentCommits and analyzeGitHubRepo work directly via service functions", async () => {
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.includes("/commits")) {
+        return jsonResponse([
+          { sha: "1234567890", commit: { message: "fix: bug", author: { name: "Dev", date: "2026-01-01" } } },
+        ]);
+      }
+      if (url.endsWith("/repos/a/b")) {
+        return jsonResponse({
+          full_name: "a/b",
+          description: null,
+          default_branch: "main",
+          language: null,
+          stargazers_count: 0,
+          forks_count: 0,
+          open_issues_count: 0,
+        });
+      }
+      return jsonResponse([{ name: "README.md", path: "README.md", type: "file" }]);
+    };
+
+    const commits = await getRecentCommits("a", "b", 5, { fetchImpl });
+    assert.equal(commits[0]?.sha, "1234567");
+
+    const analysis = await analyzeGitHubRepo("a", "b", { fetchImpl });
+    assert.equal(analysis.checks.hasPackageJson, false);
   });
 });

@@ -1,8 +1,10 @@
 import {
   GitHubClientError,
   type GitHubClientOptions,
+  type GitHubCommitSummary,
   type GitHubContentItem,
   type GitHubFileResult,
+  type GitHubRepoAnalysis,
 } from "../types.js";
 
 export const DEFAULT_TIMEOUT_MS = 10_000;
@@ -112,24 +114,7 @@ function buildApiError(status: number, headers: Headers, bodyText: string): GitH
   );
 }
 
-/**
- * Fetches directory or file metadata from the GitHub Contents API.
- */
-export async function fetchGitHubContents(
-  owner: string,
-  repo: string,
-  path = "",
-  options: GitHubClientOptions = {}
-): Promise<GitHubContentItem | GitHubContentItem[]> {
-  const safeOwner = validateGitHubIdentifier(owner, "owner");
-  const safeRepo = validateGitHubIdentifier(repo, "repo");
-  const safePath = normalizeRepoPath(path);
-
-  const encodedPath = safePath
-    ? safePath.split("/").map(encodeURIComponent).join("/")
-    : "";
-  const url = `https://api.github.com/repos/${encodeURIComponent(safeOwner)}/${encodeURIComponent(safeRepo)}/contents/${encodedPath}`;
-
+async function requestGitHubJson<T>(url: string, options: GitHubClientOptions = {}): Promise<T> {
   const token = options.token ?? process.env.GITHUB_TOKEN;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fetchFn = options.fetchImpl ?? fetch;
@@ -164,7 +149,28 @@ export async function fetchGitHubContents(
     throw buildApiError(response.status, response.headers, bodyText);
   }
 
-  return (await response.json()) as GitHubContentItem | GitHubContentItem[];
+  return (await response.json()) as T;
+}
+
+/**
+ * Fetches directory or file metadata from the GitHub Contents API.
+ */
+export async function fetchGitHubContents(
+  owner: string,
+  repo: string,
+  path = "",
+  options: GitHubClientOptions = {}
+): Promise<GitHubContentItem | GitHubContentItem[]> {
+  const safeOwner = validateGitHubIdentifier(owner, "owner");
+  const safeRepo = validateGitHubIdentifier(repo, "repo");
+  const safePath = normalizeRepoPath(path);
+
+  const encodedPath = safePath
+    ? safePath.split("/").map(encodeURIComponent).join("/")
+    : "";
+  const url = `https://api.github.com/repos/${encodeURIComponent(safeOwner)}/${encodeURIComponent(safeRepo)}/contents/${encodedPath}`;
+
+  return requestGitHubJson<GitHubContentItem | GitHubContentItem[]>(url, options);
 }
 
 /**
@@ -234,5 +240,113 @@ export async function readGitHubFile(
     text: buffer.toString("utf-8"),
     byteLength: buffer.byteLength,
     truncated: false,
+  };
+}
+
+interface RawGitHubCommit {
+  sha: string;
+  commit: {
+    message: string;
+    author?: {
+      name?: string;
+      date?: string;
+    };
+  };
+}
+
+/**
+ * Fetches recent commits for a GitHub repository.
+ */
+export async function getRecentCommits(
+  owner: string,
+  repo: string,
+  limit = 5,
+  options: GitHubClientOptions = {}
+): Promise<GitHubCommitSummary[]> {
+  const safeOwner = validateGitHubIdentifier(owner, "owner");
+  const safeRepo = validateGitHubIdentifier(repo, "repo");
+  const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 20);
+  const url = `https://api.github.com/repos/${encodeURIComponent(safeOwner)}/${encodeURIComponent(safeRepo)}/commits?per_page=${safeLimit}`;
+
+  const rawCommits = await requestGitHubJson<RawGitHubCommit[]>(url, options);
+  return rawCommits.map((item) => ({
+    sha: item.sha.slice(0, 7),
+    message: (item.commit.message.split("\n")[0] ?? "").trim(),
+    author: item.commit.author?.name ?? "unknown",
+    date: item.commit.author?.date ?? "",
+  }));
+}
+
+interface RawGitHubRepo {
+  full_name: string;
+  description: string | null;
+  default_branch: string;
+  language: string | null;
+  stargazers_count: number;
+  forks_count: number;
+  open_issues_count: number;
+}
+
+/**
+ * Inspects a GitHub repository's metadata, root structure, health checks, and package.json stack.
+ */
+export async function analyzeGitHubRepo(
+  owner: string,
+  repo: string,
+  options: GitHubClientOptions = {}
+): Promise<GitHubRepoAnalysis> {
+  const safeOwner = validateGitHubIdentifier(owner, "owner");
+  const safeRepo = validateGitHubIdentifier(repo, "repo");
+  const repoUrl = `https://api.github.com/repos/${encodeURIComponent(safeOwner)}/${encodeURIComponent(safeRepo)}`;
+
+  const [meta, rootItems] = await Promise.all([
+    requestGitHubJson<RawGitHubRepo>(repoUrl, options),
+    listGitHubFiles(safeOwner, safeRepo, "", options),
+  ]);
+
+  const names = rootItems.map((item) => item.name);
+  const lowerNames = new Set(names.map((n) => n.toLowerCase()));
+
+  const hasPackageJson = lowerNames.has("package.json");
+  let scripts: string[] = [];
+  let dependencies: string[] = [];
+  let devDependencies: string[] = [];
+
+  if (hasPackageJson) {
+    try {
+      const pkgFile = await readGitHubFile(safeOwner, safeRepo, "package.json", options);
+      const pkg = JSON.parse(pkgFile.text) as {
+        scripts?: Record<string, string>;
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
+      scripts = Object.keys(pkg.scripts ?? {});
+      dependencies = Object.keys(pkg.dependencies ?? {});
+      devDependencies = Object.keys(pkg.devDependencies ?? {});
+    } catch {
+      // Non-fatal: package.json may be malformed or oversized.
+    }
+  }
+
+  return {
+    fullName: meta.full_name,
+    description: meta.description,
+    defaultBranch: meta.default_branch,
+    language: meta.language,
+    stars: meta.stargazers_count,
+    forks: meta.forks_count,
+    openIssues: meta.open_issues_count,
+    rootEntries: rootItems.map((item) => `[${item.type}] ${item.name}`),
+    checks: {
+      hasReadme: [...lowerNames].some((n) => n.startsWith("readme")),
+      hasGitignore: lowerNames.has(".gitignore"),
+      hasLicense: [...lowerNames].some((n) => n.startsWith("license")),
+      hasTestsDir: lowerNames.has("tests") || lowerNames.has("test") || lowerNames.has("__tests__"),
+      hasCiWorkflows: lowerNames.has(".github"),
+      hasPackageJson,
+    },
+    scripts,
+    dependencies,
+    devDependencies,
   };
 }
