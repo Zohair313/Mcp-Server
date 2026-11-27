@@ -251,7 +251,7 @@ export async function readGitHubFile(
   }
 
   if (buffer.byteLength > maxFileBytes) {
-    const truncatedText = buffer.subarray(0, maxFileBytes).toString("utf-8");
+    const truncatedText = decodeUtf8WithinByteBudget(buffer, maxFileBytes);
     return {
       path: data.path,
       text: `${truncatedText}\n\n[Truncated: showing first ${maxFileBytes} of ${buffer.byteLength} bytes]`,

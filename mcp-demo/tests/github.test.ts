@@ -146,6 +146,61 @@ describe("githubClient API handling", () => {
     assert.equal(result.byteLength, 200);
     assert.match(result.text, /\[Truncated: showing first 50 of 200 bytes\]/);
   });
+
+  it("returns TOO_LARGE when GitHub omits inline content for a large file", async () => {
+    const fetchImpl: typeof fetch = async () =>
+      jsonResponse({
+        name: "huge.json",
+        path: "huge.json",
+        type: "file",
+        size: 2_000_000,
+        encoding: "none",
+        content: "",
+      });
+
+    await assert.rejects(
+      () => readGitHubFile("Zohair313", "Mcp-Server", "huge.json", { fetchImpl }),
+      (err: unknown) => err instanceof GitHubClientError && err.code === "TOO_LARGE"
+    );
+  });
+
+  it("still reads a genuinely empty file", async () => {
+    const fetchImpl: typeof fetch = async () =>
+      jsonResponse({
+        name: "empty.txt",
+        path: "empty.txt",
+        type: "file",
+        size: 0,
+        encoding: "base64",
+        content: "",
+      });
+
+    const result = await readGitHubFile("Zohair313", "Mcp-Server", "empty.txt", { fetchImpl });
+    assert.equal(result.text, "");
+    assert.equal(result.truncated, false);
+  });
+
+  it("truncates multibyte UTF-8 without splitting a character", async () => {
+    const text = "é".repeat(10); // 20 bytes
+    const fetchImpl: typeof fetch = async () =>
+      jsonResponse({
+        name: "accented.txt",
+        path: "accented.txt",
+        type: "file",
+        size: Buffer.byteLength(text),
+        encoding: "base64",
+        content: Buffer.from(text, "utf-8").toString("base64"),
+      });
+
+    const result = await readGitHubFile("Zohair313", "Mcp-Server", "accented.txt", {
+      fetchImpl,
+      maxFileBytes: 5,
+    });
+    assert.equal(result.truncated, true);
+    assert.equal(result.byteLength, 20);
+    assert.equal(result.text, "éé\n\n[Truncated: showing first 5 of 20 bytes]");
+    assert.ok(!result.text.includes("\uFFFD"));
+  });
 });
 
 describe("MCP server integration", () => {

@@ -28,7 +28,7 @@ mcp-demo/
 
 - **Tools**:
   - `list_github_files`: Lists files and folders in a GitHub repository directory (`owner`, `repo`, optional `path`).
-  - `read_github_file`: Fetches and decodes UTF-8 text files from a GitHub repository with path traversal checks, binary-file detection, 100 KB truncation guard, and `AbortSignal.timeout` protection.
+  - `read_github_file`: Fetches and decodes UTF-8 text files from a GitHub repository with path traversal checks, binary-file detection, 100 KB truncation guard (character-boundary safe), a clear `TOO_LARGE` error for files above GitHub's ~1 MB inline limit, and `AbortSignal.timeout` protection.
   - `get_recent_commits`: Fetches the most recent commits (`1–20`) with SHA, date, author, and commit summary.
   - `analyze_repo`: Inspects repository metadata, root files, health checks (`README`, `.gitignore`, `LICENSE`, `tests`, `.github`), and `package.json` tech stack.
 - **Prompts**:
