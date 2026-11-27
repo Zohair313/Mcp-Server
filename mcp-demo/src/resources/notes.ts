@@ -1,9 +1,22 @@
 import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
+function noteText(topicText: string): string {
+  return `Notes for ${topicText}: MCP separates tools (actions) from resources (context).`;
+}
+
 /**
- * Registers project note resource templates on the provided MCP server.
+ * Registers a discoverable note plus a project note template on the provided MCP server.
  */
 export function registerProjectResources(server: McpServer): void {
+  server.resource(
+    "project-mcp-note",
+    "project://mcp",
+    { title: "MCP basics", description: "Note explaining tools vs. resources", mimeType: "text/plain" },
+    async (uri) => ({
+      contents: [{ uri: uri.href, mimeType: "text/plain", text: noteText("mcp") }],
+    })
+  );
+
   server.resource(
     "project-notes",
     new ResourceTemplate("project://{topic}", { list: undefined }),
@@ -14,7 +27,7 @@ export function registerProjectResources(server: McpServer): void {
           {
             uri: uri.href,
             mimeType: "text/plain",
-            text: `Notes for ${topicText}: MCP separates tools (actions) from resources (context).`,
+            text: noteText(topicText),
           },
         ],
       };
