@@ -41,6 +41,11 @@ interface CachedResponse {
 
 const responseCache = new Map<string, CachedResponse>();
 
+/** Clears cached API responses, e.g. to force a fresh read. */
+export function clearResponseCache(): void {
+  responseCache.clear();
+}
+
 /**
  * Validates a GitHub owner or repository name segment.
  */
@@ -179,9 +184,10 @@ async function requestGitHubJson<T>(url: string, options: GitHubClientOptions = 
   const useCache = options.cache ?? (options.fetchImpl === undefined);
   const cacheKey = `${token ?? "anon"}|${url}`;
 
+  const cacheTtlMs = options.cacheTtlMs ?? CACHE_TTL_MS;
   if (useCache) {
     const cached = responseCache.get(cacheKey);
-    if (cached && Date.now() - cached.storedAt < CACHE_TTL_MS) {
+    if (cached && Date.now() - cached.storedAt < cacheTtlMs) {
       return cached.body as T;
     }
   }
