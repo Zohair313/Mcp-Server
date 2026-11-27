@@ -64,6 +64,22 @@ function isLikelyBinary(buffer: Buffer): boolean {
   return decoded.includes("\uFFFD");
 }
 
+/**
+ * Decodes UTF-8 text within a byte budget without splitting a multibyte sequence.
+ */
+function decodeUtf8WithinByteBudget(buffer: Buffer, maxBytes: number): string {
+  if (buffer.byteLength <= maxBytes) {
+    return buffer.toString("utf-8");
+  }
+
+  let end = maxBytes;
+  // UTF-8 continuation bytes have the bit pattern 10xxxxxx; back off to a character boundary.
+  while (end > 0 && ((buffer[end] ?? 0) & 0xc0) === 0x80) {
+    end -= 1;
+  }
+  return buffer.subarray(0, end).toString("utf-8");
+}
+
 function buildApiError(status: number, headers: Headers, bodyText: string): GitHubClientError {
   if (status === 404) {
     return new GitHubClientError(
@@ -210,10 +226,19 @@ export async function readGitHubFile(
     );
   }
 
-  if (data.content === undefined) {
+  // GitHub omits inline content for files above ~1 MB (encoding "none", content "").
+  // A genuinely empty file has size 0 and still uses base64 encoding.
+  if (data.encoding !== "base64" || typeof data.content !== "string") {
     throw new GitHubClientError(
-      `File "${safePath}" has no inline content (it may exceed GitHub's 1 MB contents API limit).`,
-      "NOT_A_FILE"
+      `File "${safePath}" has no inline base64 content; it likely exceeds GitHub's 1 MB contents API limit. Use the raw download URL instead.`,
+      "TOO_LARGE"
+    );
+  }
+
+  if (data.content.length === 0 && (data.size ?? 0) > 0) {
+    throw new GitHubClientError(
+      `File "${safePath}" is too large for GitHub's contents API (no inline content). Use the raw download URL instead.`,
+      "TOO_LARGE"
     );
   }
 
