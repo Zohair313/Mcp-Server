@@ -18,6 +18,10 @@ export interface GitHubClientOptions {
   timeoutMs?: number | undefined;
   maxFileBytes?: number | undefined;
   fetchImpl?: typeof fetch | undefined;
+  /** Git ref to read contents from (defaults to the repository's default branch). */
+  ref?: string | undefined;
+  /** Cache JSON responses in memory; disabled automatically when fetchImpl is injected. */
+  cache?: boolean | undefined;
 }
 
 /**
@@ -52,6 +56,7 @@ export interface GitHubRepoAnalysis {
   forks: number;
   openIssues: number;
   rootEntries: string[];
+  scannedPaths: string[];
   checks: {
     hasReadme: boolean;
     hasGitignore: boolean;

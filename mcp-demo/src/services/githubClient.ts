@@ -9,8 +9,37 @@ import {
 
 export const DEFAULT_TIMEOUT_MS = 10_000;
 export const DEFAULT_MAX_FILE_BYTES = 100 * 1024; // 100 KB
+const CACHE_TTL_MS = 60_000;
+const MAX_CACHE_ENTRIES = 100;
+const MAX_DISCOVERY_DIRS = 3;
 
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9_.-]+$/;
+const PROJECT_DIR_HINTS = new Set([
+  "mcp-demo",
+  "server",
+  "backend",
+  "app",
+  "api",
+  "src",
+  "packages",
+  "services",
+]);
+const IGNORED_DIRS = new Set([
+  "node_modules",
+  "dist",
+  "build",
+  "coverage",
+  "vendor",
+  ".git",
+]);
+
+interface CachedResponse {
+  etag?: string | undefined;
+  body: unknown;
+  storedAt: number;
+}
+
+const responseCache = new Map<string, CachedResponse>();
 
 /**
  * Validates a GitHub owner or repository name segment.
@@ -134,38 +163,97 @@ async function requestGitHubJson<T>(url: string, options: GitHubClientOptions = 
   const token = options.token ?? process.env.GITHUB_TOKEN;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fetchFn = options.fetchImpl ?? fetch;
+  const useCache = options.cache ?? (options.fetchImpl === undefined);
+  const cacheKey = `${token ?? "anon"}|${url}`;
+
+  if (useCache) {
+    const cached = responseCache.get(cacheKey);
+    if (cached && Date.now() - cached.storedAt < CACHE_TTL_MS) {
+      return cached.body as T;
+    }
+  }
 
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
     "User-Agent": "local-demo-mcp",
+    "X-GitHub-Api-Version": "2022-11-28",
   };
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
+  const cached = responseCache.get(cacheKey);
+  if (useCache && cached?.etag) {
+    headers["If-None-Match"] = cached.etag;
+  }
 
-  let response: Response;
+  // One timer covers both the fetch and reading the response body.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timeoutError = () =>
+    new GitHubClientError(`GitHub API request timed out after ${timeoutMs}ms.`, "TIMEOUT");
+
   try {
-    response = await fetchFn(url, {
-      headers,
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch (error) {
-    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+    let response: Response;
+    try {
+      response = await fetchFn(url, { headers, signal: controller.signal });
+    } catch (error) {
+      if (
+        controller.signal.aborted ||
+        (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError"))
+      ) {
+        throw timeoutError();
+      }
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new GitHubClientError(`Network error while contacting GitHub API: ${reason}`, "API_ERROR");
+    }
+
+    if (response.status === 304 && cached) {
+      cached.storedAt = Date.now();
+      return cached.body as T;
+    }
+
+    if (!response.ok) {
+      let bodyText = "";
+      try {
+        bodyText = await response.text();
+      } catch {
+        if (controller.signal.aborted) {
+          throw timeoutError();
+        }
+      }
+      throw buildApiError(response.status, response.headers, bodyText);
+    }
+
+    let parsed: T;
+    try {
+      parsed = (await response.json()) as T;
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw timeoutError();
+      }
+      const reason = error instanceof Error ? error.message : String(error);
       throw new GitHubClientError(
-        `GitHub API request timed out after ${timeoutMs}ms.`,
-        "TIMEOUT"
+        `GitHub API returned an invalid JSON response: ${reason}`,
+        "API_ERROR",
+        response.status
       );
     }
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new GitHubClientError(`Network error while contacting GitHub API: ${reason}`, "API_ERROR");
-  }
 
-  if (!response.ok) {
-    const bodyText = await response.text().catch(() => "");
-    throw buildApiError(response.status, response.headers, bodyText);
-  }
+    if (useCache) {
+      const etag = response.headers.get("etag") ?? undefined;
+      responseCache.set(cacheKey, { etag, body: parsed, storedAt: Date.now() });
+      if (responseCache.size > MAX_CACHE_ENTRIES) {
+        const oldest = responseCache.keys().next().value;
+        if (oldest !== undefined) {
+          responseCache.delete(oldest);
+        }
+      }
+    }
 
-  return (await response.json()) as T;
+    return parsed;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -185,8 +273,10 @@ export async function fetchGitHubContents(
     ? safePath.split("/").map(encodeURIComponent).join("/")
     : "";
   const url = `https://api.github.com/repos/${encodeURIComponent(safeOwner)}/${encodeURIComponent(safeRepo)}/contents/${encodedPath}`;
+  const ref = options.ref;
+  const refQuery = ref ? `?ref=${encodeURIComponent(ref)}` : "";
 
-  return requestGitHubJson<GitHubContentItem | GitHubContentItem[]>(url, options);
+  return requestGitHubJson<GitHubContentItem | GitHubContentItem[]>(url + refQuery, options);
 }
 
 /**
