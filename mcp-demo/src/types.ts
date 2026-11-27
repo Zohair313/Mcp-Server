@@ -22,6 +22,8 @@ export interface GitHubClientOptions {
   ref?: string | undefined;
   /** Cache JSON responses in memory; disabled automatically when fetchImpl is injected. */
   cache?: boolean | undefined;
+  /** Cache lifetime in milliseconds (defaults to 60s). */
+  cacheTtlMs?: number | undefined;
 }
 
 /**
