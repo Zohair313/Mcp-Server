@@ -109,6 +109,19 @@ function decodeUtf8WithinByteBudget(buffer: Buffer, maxBytes: number): string {
   return buffer.subarray(0, end).toString("utf-8");
 }
 
+/**
+ * Errors that must abort an analysis instead of being treated as an absent optional path.
+ */
+function isFatalApiError(error: unknown): boolean {
+  return (
+    error instanceof GitHubClientError &&
+    (error.code === "RATE_LIMITED" ||
+      error.code === "TIMEOUT" ||
+      error.code === "UNAUTHORIZED" ||
+      error.code === "FORBIDDEN")
+  );
+}
+
 function buildApiError(status: number, headers: Headers, bodyText: string): GitHubClientError {
   if (status === 404) {
     return new GitHubClientError(
@@ -419,17 +432,50 @@ export async function analyzeGitHubRepo(
     listGitHubFiles(safeOwner, safeRepo, "", options),
   ]);
 
-  const names = rootItems.map((item) => item.name);
-  const lowerNames = new Set(names.map((n) => n.toLowerCase()));
+  // Read follow-up calls from the same ref so results stay consistent.
+  const refOptions: GitHubClientOptions = { ...options, ref: options.ref ?? meta.default_branch };
+
+  // Health checks must not be root-only: many repos keep their code in one project folder.
+  const rootDirs = rootItems
+    .filter((item) => item.type === "dir" && !IGNORED_DIRS.has(item.name.toLowerCase()))
+    .map((item) => item.name);
+  const hintedDirs = rootDirs.filter((dir) => PROJECT_DIR_HINTS.has(dir.toLowerCase()));
+  const discoveryDirs = [...hintedDirs, ...rootDirs.filter((dir) => !hintedDirs.includes(dir))].slice(
+    0,
+    MAX_DISCOVERY_DIRS
+  );
+
+  const subLists = await Promise.all(
+    discoveryDirs.map(async (dir) => {
+      try {
+        return { dir, items: await listGitHubFiles(safeOwner, safeRepo, dir, refOptions) };
+      } catch (error) {
+        if (isFatalApiError(error)) {
+          throw error;
+        }
+        return { dir, items: [] as GitHubContentItem[] };
+      }
+    })
+  );
+
+  const allItems = [...rootItems, ...subLists.flatMap((entry) => entry.items)];
+  const lowerNames = new Set(allItems.map((item) => item.name.toLowerCase()));
 
   const hasPackageJson = lowerNames.has("package.json");
+  const pkgDir = rootItems.some((item) => item.name.toLowerCase() === "package.json")
+    ? ""
+    : (subLists.find((entry) =>
+        entry.items.some((item) => item.name.toLowerCase() === "package.json")
+      )?.dir ?? "");
+  const pkgPath = pkgDir ? `${pkgDir}/package.json` : "package.json";
+
   let scripts: string[] = [];
   let dependencies: string[] = [];
   let devDependencies: string[] = [];
 
   if (hasPackageJson) {
     try {
-      const pkgFile = await readGitHubFile(safeOwner, safeRepo, "package.json", options);
+      const pkgFile = await readGitHubFile(safeOwner, safeRepo, pkgPath, refOptions);
       const pkg = JSON.parse(pkgFile.text) as {
         scripts?: Record<string, string>;
         dependencies?: Record<string, string>;
@@ -438,8 +484,30 @@ export async function analyzeGitHubRepo(
       scripts = Object.keys(pkg.scripts ?? {});
       dependencies = Object.keys(pkg.dependencies ?? {});
       devDependencies = Object.keys(pkg.devDependencies ?? {});
-    } catch {
-      // Non-fatal: package.json may be malformed or oversized.
+    } catch (error) {
+      // Only malformed package.json is non-fatal; API/timeout errors must surface.
+      if (!(error instanceof SyntaxError)) {
+        throw error;
+      }
+    }
+  }
+
+  const githubDir = subLists.find((entry) =>
+    entry.items.some((item) => item.name.toLowerCase() === ".github" && item.type === "dir")
+  )?.dir;
+  const hasGithubDir = githubDir !== undefined || lowerNames.has(".github");
+  let hasCiWorkflows = false;
+  if (hasGithubDir) {
+    const workflowsPath = githubDir ? `${githubDir}/.github/workflows` : ".github/workflows";
+    try {
+      const workflowItems = await listGitHubFiles(safeOwner, safeRepo, workflowsPath, refOptions);
+      hasCiWorkflows = workflowItems.some(
+        (item) => item.type === "file" && /\.(ya?ml)$/i.test(item.name)
+      );
+    } catch (error) {
+      if (isFatalApiError(error)) {
+        throw error;
+      }
     }
   }
 
@@ -452,12 +520,13 @@ export async function analyzeGitHubRepo(
     forks: meta.forks_count,
     openIssues: meta.open_issues_count,
     rootEntries: rootItems.map((item) => `[${item.type}] ${item.name}`),
+    scannedPaths: ["", ...subLists.map((entry) => entry.dir)],
     checks: {
       hasReadme: [...lowerNames].some((n) => n.startsWith("readme")),
       hasGitignore: lowerNames.has(".gitignore"),
       hasLicense: [...lowerNames].some((n) => n.startsWith("license")),
-      hasTestsDir: lowerNames.has("tests") || lowerNames.has("test") || lowerNames.has("__tests__"),
-      hasCiWorkflows: lowerNames.has(".github"),
+      hasTestsDir: [...lowerNames].some((n) => n === "tests" || n === "test" || n === "__tests__"),
+      hasCiWorkflows,
       hasPackageJson,
     },
     scripts,
