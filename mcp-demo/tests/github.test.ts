@@ -5,6 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../src/server.js";
 import {
   analyzeGitHubRepo,
+  clearResponseCache,
   getRecentCommits,
   listGitHubFiles,
   normalizeRepoPath,
@@ -232,7 +233,7 @@ describe("MCP server integration", () => {
           open_issues_count: 0,
         });
       }
-      if (url.endsWith("/contents/package.json")) {
+      if (url.includes("/contents/package.json")) {
         return jsonResponse({
           name: "package.json",
           path: "package.json",
@@ -306,6 +307,9 @@ describe("MCP server integration", () => {
     assert.equal(errRes.isError, true);
     assert.match((errRes.content as Array<{ text: string }>)[0]?.text ?? "", /\[NOT_FOUND\]/);
 
+    const { resources } = await client.listResources();
+    assert.ok(resources.some((resource) => resource.uri === "project://mcp"));
+
     const resourceRes = await client.readResource({ uri: "project://mcp" });
     assert.match(
       (resourceRes.contents[0] as { text: string }).text,
@@ -357,5 +361,166 @@ describe("MCP server integration", () => {
 
     const analysis = await analyzeGitHubRepo("a", "b", { fetchImpl });
     assert.equal(analysis.checks.hasPackageJson, false);
+  });
+});
+
+describe("githubClient hardening", () => {
+  const meta = {
+    full_name: "a/b",
+    description: null,
+    default_branch: "main",
+    language: "TypeScript",
+    stargazers_count: 0,
+    forks_count: 0,
+    open_issues_count: 0,
+  };
+
+  it("propagates rate-limit errors raised while reading package.json", async () => {
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith("/repos/a/b")) {
+        return jsonResponse(meta);
+      }
+      if (url.includes("/contents/package.json")) {
+        return jsonResponse(
+          { message: "API rate limit exceeded" },
+          403,
+          { "x-ratelimit-remaining": "0" }
+        );
+      }
+      return jsonResponse([{ name: "package.json", path: "package.json", type: "file" }]);
+    };
+
+    await assert.rejects(
+      () => analyzeGitHubRepo("a", "b", { fetchImpl }),
+      (err: unknown) => err instanceof GitHubClientError && err.code === "RATE_LIMITED"
+    );
+  });
+
+  it("treats malformed package.json as non-fatal", async () => {
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith("/repos/a/b")) {
+        return jsonResponse(meta);
+      }
+      if (url.includes("/contents/package.json")) {
+        return jsonResponse({
+          name: "package.json",
+          path: "package.json",
+          type: "file",
+          encoding: "base64",
+          content: Buffer.from("not json", "utf-8").toString("base64"),
+        });
+      }
+      return jsonResponse([{ name: "package.json", path: "package.json", type: "file" }]);
+    };
+
+    const analysis = await analyzeGitHubRepo("a", "b", { fetchImpl });
+    assert.deepEqual(analysis.scripts, []);
+    assert.deepEqual(analysis.dependencies, []);
+  });
+
+  it("discovers a project subdirectory and real CI workflows", async () => {
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith("/repos/a/b")) {
+        return jsonResponse(meta);
+      }
+      if (url.includes("/contents/mcp-demo/package.json")) {
+        return jsonResponse({
+          name: "package.json",
+          path: "mcp-demo/package.json",
+          type: "file",
+          encoding: "base64",
+          content: Buffer.from('{"dependencies":{"@modelcontextprotocol/sdk":"^1.32.2"}}', "utf-8").toString("base64"),
+        });
+      }
+      if (url.includes("/contents/.github/workflows")) {
+        return jsonResponse([
+          { name: "ci.yml", path: ".github/workflows/ci.yml", type: "file" },
+        ]);
+      }
+      if (url.includes("/contents/mcp-demo")) {
+        return jsonResponse([
+          { name: "package.json", path: "mcp-demo/package.json", type: "file" },
+          { name: "tests", path: "mcp-demo/tests", type: "dir" },
+        ]);
+      }
+      return jsonResponse([
+        { name: "README.md", path: "README.md", type: "file" },
+        { name: "mcp-demo", path: "mcp-demo", type: "dir" },
+        { name: ".github", path: ".github", type: "dir" },
+      ]);
+    };
+
+    const analysis = await analyzeGitHubRepo("a", "b", { fetchImpl });
+    assert.deepEqual(analysis.scannedPaths, ["", "mcp-demo"]);
+    assert.equal(analysis.checks.hasPackageJson, true);
+    assert.equal(analysis.checks.hasTestsDir, true);
+    assert.equal(analysis.checks.hasCiWorkflows, true);
+    assert.deepEqual(analysis.dependencies, ["@modelcontextprotocol/sdk"]);
+  });
+
+  it("wraps invalid JSON responses in API_ERROR", async () => {
+    const fetchImpl: typeof fetch = async () =>
+      new Response("not json", { status: 200, headers: { "content-type": "application/json" } });
+
+    await assert.rejects(
+      () => listGitHubFiles("a", "b", "", { fetchImpl }),
+      (err: unknown) => err instanceof GitHubClientError && err.code === "API_ERROR"
+    );
+  });
+
+  it("sends the pinned GitHub API version header", async () => {
+    let version: string | null = null;
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      version = new Headers(init?.headers).get("x-github-api-version");
+      return jsonResponse([]);
+    };
+
+    await listGitHubFiles("a", "b", "", { fetchImpl });
+    assert.equal(version, "2022-11-28");
+  });
+
+  it("serves repeat requests from the in-memory cache", async () => {
+    clearResponseCache();
+    let calls = 0;
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1;
+      return jsonResponse([{ name: "README.md", path: "README.md", type: "file" }], 200, {
+        etag: '"abc"',
+      });
+    };
+
+    const options = { fetchImpl, cache: true };
+    const first = await listGitHubFiles("a", "b", "", options);
+    const second = await listGitHubFiles("a", "b", "", options);
+    assert.deepEqual(second, first);
+    assert.equal(calls, 1);
+    clearResponseCache();
+  });
+
+  it("revalidates stale entries with If-None-Match and accepts 304", async () => {
+    clearResponseCache();
+    let calls = 0;
+    let conditionalHeader: string | null = null;
+    const fetchImpl: typeof fetch = async (_input, init) => {
+      calls += 1;
+      conditionalHeader = new Headers(init?.headers).get("if-none-match");
+      if (calls === 1) {
+        return jsonResponse([{ name: "README.md", path: "README.md", type: "file" }], 200, {
+          etag: '"v1"',
+        });
+      }
+      return new Response(null, { status: 304, headers: { etag: '"v1"' } });
+    };
+
+    const options = { fetchImpl, cache: true, cacheTtlMs: 0 };
+    const first = await listGitHubFiles("a", "b", "", options);
+    const second = await listGitHubFiles("a", "b", "", options);
+    assert.deepEqual(second, first);
+    assert.equal(calls, 2);
+    assert.equal(conditionalHeader, '"v1"');
+    clearResponseCache();
   });
 });

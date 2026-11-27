@@ -31,6 +31,7 @@ const IGNORED_DIRS = new Set([
   "coverage",
   "vendor",
   ".git",
+  ".github",
 ]);
 
 interface CachedResponse {
