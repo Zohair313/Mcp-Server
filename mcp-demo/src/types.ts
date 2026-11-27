@@ -79,6 +79,7 @@ export class GitHubClientError extends Error {
     | "TIMEOUT"
     | "BINARY_FILE"
     | "NOT_A_FILE"
+    | "TOO_LARGE"
     | "API_ERROR";
 
   constructor(
