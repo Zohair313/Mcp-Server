@@ -11,7 +11,7 @@ export interface ClientTarget {
   configPath: string;
 }
 
-export const DEFAULT_PACKAGE_SPEC = "@zohairhussain/local-demo-mcp@1.0.5";
+export const DEFAULT_PACKAGE_SPEC = "@zohairhussain/local-demo-mcp@1.0.6";
 
 /**
  * Resolves standard MCP configuration file paths for supported AI clients.

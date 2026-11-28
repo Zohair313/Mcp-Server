@@ -13,6 +13,8 @@ async function main(): Promise<void> {
     if (action !== "start_server") {
       return;
     }
+    // readline.close() pauses process.stdin; resume it so StdioServerTransport stays alive.
+    process.stdin.resume();
   }
 
   const server = createServer();

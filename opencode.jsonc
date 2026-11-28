@@ -6,7 +6,7 @@
       "command": [
         "npx",
         "--yes",
-        "@zohairhussain/local-demo-mcp@1.0.5"
+        "@zohairhussain/local-demo-mcp@1.0.6"
       ],
       "enabled": true,
       "environment": {
