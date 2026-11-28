@@ -1,10 +1,11 @@
 {
   "name": "@zohairhussain/local-demo-mcp",
-  "version": "1.0.1",
+  "version": "1.0.4",
   "description": "Modular TypeScript MCP server for inspecting GitHub repositories and serving project notes",
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
-    "local-demo-mcp": "./dist/index.js"
+    "local-demo-mcp": "dist/index.js"
   },
   "files": [
     "dist",
