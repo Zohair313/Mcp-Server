@@ -1,12 +1,16 @@
 {
-  "name": "@zohair313/local-demo-mcp",
-  "version": "1.0.0",
+  "name": "@zohairhussain/local-demo-mcp",
+  "version": "1.0.1",
   "description": "Modular TypeScript MCP server for inspecting GitHub repositories and serving project notes",
-  "main": "dist/index.js",
+  "main": "./dist/index.js",
   "bin": {
-    "local-demo-mcp": "dist/index.js"
+    "local-demo-mcp": "./dist/index.js"
   },
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
@@ -14,7 +18,13 @@
     "test": "tsx --test tests/*.test.ts",
     "prepublishOnly": "npm run build && npm test"
   },
-  "keywords": ["mcp", "github", "stdio", "typescript", "model-context-protocol"],
+  "keywords": [
+    "mcp",
+    "github",
+    "stdio",
+    "typescript",
+    "model-context-protocol"
+  ],
   "author": "Zohair313",
   "license": "ISC",
   "type": "module",
