@@ -1,14 +1,16 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "servers": {
-      "local-demo-mcp": {
-        "type": "local",
-        "command": ["node", "E:\\MCP server\\mcp-demo\\dist\\index.js"],
-        "cwd": "E:\\MCP server\\mcp-demo",
-        "environment": {
-          "GITHUB_TOKEN": "{env:GITHUB_TOKEN}"
-        }
+    "local-demo-mcp": {
+      "type": "local",
+      "command": [
+        "npx",
+        "--yes",
+        "@zohairhussain/local-demo-mcp@1.0.4"
+      ],
+      "enabled": true,
+      "environment": {
+        "GITHUB_TOKEN": "{env:GITHUB_TOKEN}"
       }
     }
   }
